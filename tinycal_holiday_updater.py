@@ -3,11 +3,13 @@ import plistlib
 import os
 import re
 import requests # For fetching data from URL
+import shutil # For file backup
 from datetime import datetime
 
 # --- Configuration ---
 CALENDAR_DIR = os.path.join(os.path.expanduser("~"), "Library/Containers/app.cyan.tinycalx/Data/Documents/calendars")
 HOLIDAY_JSON_URL_TEMPLATE = "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/{year}.json"
+BACKUP_DIR = os.path.join(os.getcwd(), "backup") 
 
 def fetch_holiday_data(year):
     """
@@ -59,7 +61,7 @@ def fetch_holiday_data(year):
 
 def update_single_plist_file(plist_file_path, year_schedule_map):
     """
-    根据提供的节假日安排更新单个 PList 日历文件中的 worktime 键。
+    备份并根据提供的节假日安排更新单个 PList 日历文件中的 worktime 键。
     此函数会直接修改文件。
 
     Args:
@@ -68,15 +70,35 @@ def update_single_plist_file(plist_file_path, year_schedule_map):
 
     Returns:
         tuple: (bool, bool) 第一个 bool 表示文件是否被修改，第二个 bool 表示操作是否成功。
-               例如 (True, True) 表示文件被修改且操作成功。
-               (False, True) 表示文件未被修改（因为无需更新或未找到匹配日期）但操作逻辑成功。
-               (False, False) 表示操作失败。
     """
+    # --- Backup original file ---
+    try:
+        if not os.path.exists(BACKUP_DIR):
+            os.makedirs(BACKUP_DIR)
+            print(f"已创建备份目录: {BACKUP_DIR}")
+
+        base_filename = os.path.basename(plist_file_path)
+        backup_file_path = os.path.join(BACKUP_DIR, base_filename)
+        
+        # 检查原文件是否存在，防止shutil.copy2报错
+        if not os.path.exists(plist_file_path):
+            print(f"错误：原文件 {plist_file_path} 不存在，无法备份和更新。")
+            return False, False
+
+        shutil.copy2(plist_file_path, backup_file_path)
+        print(f"已将原文件 {base_filename} 备份到 {backup_file_path}")
+    except Exception as backup_err:
+        print(f"错误：备份文件 {plist_file_path} 失败: {backup_err}")
+        # 根据策略，可以选择在此处返回失败，或者继续尝试更新文件
+        # 当前策略：备份失败也尝试更新，但给予警告
+        # return False, False # 如果希望备份失败则不进行更新，取消此行注释
+
+    # --- Load and update PList file ---
     try:
         with open(plist_file_path, 'rb') as fp:
             plist_content = plistlib.load(fp)
-    except FileNotFoundError:
-        print(f"错误：未找到 PList 文件 {plist_file_path}")
+    except FileNotFoundError: # 理论上已通过上面的检查，但作为双重保障
+        print(f"错误：未找到 PList 文件 {plist_file_path} (在尝试读取时)")
         return False, False
     except plistlib.InvalidFileException:
         print(f"错误：PList 文件格式无效 {plist_file_path}")
@@ -89,8 +111,8 @@ def update_single_plist_file(plist_file_path, year_schedule_map):
         print(f"错误：PList 文件 {plist_file_path} 中缺少 'monthData' 或其值不是列表。")
         return False, False
 
-    updated_entries_count = 0 # 记录此文件中实际更新的条目数
-    modified_in_this_file = False # 标记此文件是否实际被修改
+    updated_entries_count = 0
+    modified_in_this_file = False
 
     for item in plist_content['monthData']:
         if not all(k in item for k in ['year', 'month', 'day']):
@@ -117,27 +139,28 @@ def update_single_plist_file(plist_file_path, year_schedule_map):
         try:
             with open(plist_file_path, 'wb') as fp:
                 plistlib.dump(plist_content, fp)
-            print(f"文件 {os.path.basename(plist_file_path)} 已更新。共修改 {updated_entries_count} 个日期的状态。")
-            return True, True # 文件被修改，操作成功
+            print(f"文件 {os.path.basename(plist_file_path)} 已成功更新。共修改 {updated_entries_count} 个日期的状态。")
+            return True, True
         except Exception as e:
             print(f"错误：保存更新后的 PList 文件 {plist_file_path} 时出错: {e}")
-            return True, False # 文件尝试修改，但保存失败
-    elif updated_entries_count == 0 and not modified_in_this_file: # 没有条目被更新，文件未被修改
+            return True, False # 尝试修改但保存失败
+    elif updated_entries_count == 0 and not modified_in_this_file:
         # print(f"文件 {os.path.basename(plist_file_path)} 无需更新 (未找到匹配日期或状态已正确)。")
-        return False, True # 文件未被修改，操作视为成功
-    else: # 有条目匹配但状态已是最新
+        return False, True
+    else:
         print(f"文件 {os.path.basename(plist_file_path)} 中的日期状态已是最新，无需更新。")
-        return False, True # 文件未被修改，操作视为成功
+        return False, True
 
 
 def main():
     """
     主函数，处理用户交互和文件处理流程。
     """
-    print("日历更新脚本")
-    print("--------------------")
-    print(f"日历目录将设置为: {CALENDAR_DIR}") # 显示将使用的路径
-    print("--------------------")
+    print("TinyCal 日历节假日更新脚本")
+    print("-----------------------------")
+    print(f"日历配置目录: {CALENDAR_DIR}")
+    print(f"备份文件将保存到: {BACKUP_DIR}")
+    print("-----------------------------")
     print("请选择操作：")
     print("1. 更新今年 (" + str(datetime.now().year) + ") 的日历")
     print("2. 输入特定年份进行更新")
@@ -152,7 +175,7 @@ def main():
             try:
                 year_input = input("请输入4位数的年份 (例如 2025): ")
                 target_year = int(year_input)
-                if 1800 < target_year < 2200: # 一个合理的年份范围
+                if 1800 < target_year < 2200:
                     break
                 else:
                     print("请输入一个有效的年份。")
@@ -164,67 +187,61 @@ def main():
 
     print(f"\n准备更新 {target_year} 年的日历文件...")
 
-    # 1. 获取该年份的节假日数据
     year_schedule_map = fetch_holiday_data(target_year)
     if not year_schedule_map:
         print(f"未能获取 {target_year} 年的节假日数据。无法继续。")
         return
 
-    # 2. 检查日历目录是否存在
     if not os.path.isdir(CALENDAR_DIR):
         print(f"错误：日历目录 '{CALENDAR_DIR}' 不存在。")
         print("请确认该路径是正确的，并且您有权限访问它。")
         return
     
-    print(f"\n将在目录 '{CALENDAR_DIR}' 中查找 {target_year} 年的日历文件...")
+    print(f"\n将在目录 '{CALENDAR_DIR}' 中查找并处理 {target_year} 年的日历文件...")
 
-    # 3. 遍历目录中的文件并处理
-    total_files_processed = 0 # 处理的总文件数
-    files_actually_updated = 0 # 实际被修改的文件数
-    files_failed_to_update = 0 # 更新失败的文件数
+    total_files_processed = 0
+    files_actually_updated = 0
+    files_failed_to_update = 0
     
-    # 正则表达式匹配YYYY.M.0 (zh_CN) 或 YYYY.MM.0 (zh_CN) 格式的文件名
-    # 例如: 2025.1.0 (zh_CN) 或 2025.10.0 (zh_CN)
     filename_pattern = re.compile(r"(\d{4})\.(\d{1,2})\.0 \(zh_CN\)")
 
     for filename in os.listdir(CALENDAR_DIR):
         match = filename_pattern.fullmatch(filename)
         if match:
             file_year_str = match.group(1)
-            # file_month_str = match.group(2) # 月份信息，当前未使用，但可以提取
-
             try:
                 file_year = int(file_year_str)
                 if file_year == target_year:
                     total_files_processed +=1
                     plist_file_full_path = os.path.join(CALENDAR_DIR, filename)
-                    # print(f"\n正在处理文件: {filename}") # 可以取消注释以获取更详细的单个文件处理日志
                     
+                    print(f"\n--- 正在处理文件: {filename} ---")
                     modified_status, success_status = update_single_plist_file(plist_file_full_path, year_schedule_map)
                     
                     if modified_status and success_status:
                         files_actually_updated += 1
-                    elif not success_status: # 如果操作不成功 (例如保存失败)
+                    elif not success_status:
                         files_failed_to_update +=1
-
             except ValueError:
                 print(f"警告：文件名 {filename} 中的年份格式不正确，跳过。")
                 continue
     
-    print("\n--------------------")
+    print("\n-----------------------------")
     print("脚本执行完毕。")
     if total_files_processed == 0:
         print(f"在目录 '{CALENDAR_DIR}' 中没有找到属于 {target_year} 年的日历文件。")
     else:
         print(f"共检查 {total_files_processed} 个 {target_year} 年的日历文件。")
-        print(f"其中 {files_actually_updated} 个文件被成功更新。")
+        print(f"其中 {files_actually_updated} 个文件被成功更新并已备份。")
         if files_failed_to_update > 0:
-            print(f"注意：有 {files_failed_to_update} 个文件在尝试更新时发生错误。请检查上面的日志。")
-        remaining_files = total_files_processed - files_actually_updated - files_failed_to_update
-        if remaining_files > 0:
-             print(f"{remaining_files} 个文件无需更新或未包含与节假日数据匹配的日期。")
-
-    print("--------------------")
+            print(f"注意：有 {files_failed_to_update} 个文件在尝试更新时发生错误 (即使已备份)。请检查上面的日志。")
+        
+        # 计算无需更新的文件数，这些文件可能已备份但内容未更改
+        files_no_change_needed = total_files_processed - files_actually_updated - files_failed_to_update
+        if files_no_change_needed > 0:
+             print(f"{files_no_change_needed} 个文件无需更新（已是最新或无匹配日期），但仍执行了备份。")
+    print(f"所有备份文件（如有）均保存在: {BACKUP_DIR}")
+    print("-----------------------------")
 
 if __name__ == "__main__":
     main()
